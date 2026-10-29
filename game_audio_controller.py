@@ -2,63 +2,66 @@ import time
 import pygame
 import serial
 
-PORT_ARDUINO = 'COM8'  # Sesuai port kamu
+PORT_ARDUINO = 'COM8'
 BAUD_RATE = 9600
+AUDIO_FILE = 'alarm_sound.mp3'
 
 print('Menghubungkan ke Arduino...')
 try:
-  ser = serial.Serial(PORT_ARDUINO, BAUD_RATE, timeout=0.1)
-  time.sleep(2)
-  print('Berhasil terhubung ke Arduino!')
+    ser = serial.Serial(PORT_ARDUINO, BAUD_RATE, timeout=0.1)
+    time.sleep(2)
+    print('Berhasil terhubung ke Arduino!')
 except Exception as e:
-  print(f'Gagal terhubung ke Arduino: {e}')
-  exit()
+    print(f'Gagal terhubung ke Arduino: {e}')
+    exit()
 
 pygame.mixer.init()
 
 try:
-  # Menggunakan 1 file audio yang sama untuk alarm dan touch
-  shared_sound = pygame.mixer.Sound('alarm_sound.mp3')
+    shared_sound = pygame.mixer.Sound(AUDIO_FILE)
 
-  # Menggunakan dua channel terpisah agar suara touch dan alarm tidak saling bentrok
-  touch_channel = pygame.mixer.Channel(0)
-  alarm_channel = pygame.mixer.Channel(1)
+    touch_channel = pygame.mixer.Channel(0)
+    alarm_channel = pygame.mixer.Channel(1)
 
-  print('File audio siap. Menunggu sinyal dari Arduino...')
+    print('File audio siap. Menunggu sinyal dari Arduino...')
 except Exception as e:
-  print(f'Error memuat audio: {e}')
-  exit()
+    print(f'Error memuat audio: {e}')
+    exit()
 
 while True:
-  try:
-    if ser.in_waiting > 0:
-      line = ser.readline().decode('utf-8').strip()
+    try:
+        if ser.in_waiting > 0:
+            line = ser.readline().decode('utf-8', errors='ignore').strip()
 
-      if line:
-        print(f'[Arduino]: {line}')
+            if line:
+                print(f'[Arduino]: {line}')
 
-        if line == 'ARDUINO_READY' or line == 'SYSTEM_RE-ARMED':
-          pygame.mixer.stop()
+                if line == 'ARDUINO_READY':
+                    pygame.mixer.stop()
 
-        # Logika Touch Sensor (Menyala saat disentuh, mati saat dilepas)
-        elif line == 'TOUCH_PRESSED':
-          # Play sekali (loops=0), diputar di channel terpisah
-          touch_channel.play(shared_sound, loops=0)
-        elif line == 'TOUCH_RELEASED':
-          touch_channel.stop()  # Langsung cut off suara touch
+                elif line == 'TOUCH_PRESSED':
+                    touch_channel.play(shared_sound, loops=0)
+                elif line == 'TOUCH_RELEASED':
+                    touch_channel.stop()
 
-        # Logika Alarm Button B (Loop terus sampai ditekan/QTE sukses)
-        elif line == 'PLAY_AUDIO_BUTTON_B_RELEASED':
-          alarm_channel.play(shared_sound, loops=-1)
+                elif line == 'PLAY_AUDIO_BUTTON_B_RELEASED':
+                    if not alarm_channel.get_busy():
+                        alarm_channel.play(shared_sound, loops=-1)
 
-        elif line == 'STOP_ALARM' or line == 'QTE_SUCCESS':
-          alarm_channel.stop()
+                elif line == 'STOP_ALARM':
+                    alarm_channel.stop()
 
-  except KeyboardInterrupt:
-    print('\nProgram dihentikan.')
-    break
-  except Exception as e:
-    print(f'Error: {e}')
-    time.sleep(1)
+    except KeyboardInterrupt:
+        print('\nProgram dihentikan.')
+        break
+    except serial.SerialException as e:
+        print(f'Koneksi serial terputus: {e}')
+        break
+    except Exception as e:
+        print(f'Error: {e}')
+        time.sleep(0.5)
 
-  time.sleep(0.005)
+    time.sleep(0.005)
+
+pygame.mixer.stop()
+ser.close()
