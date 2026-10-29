@@ -1,101 +1,151 @@
-const int TOUCH_PIN = 2;      
-const int LED_MAIN_PIN = 3;   
-const int BUTTON_A_PIN = 6;   
-const int BUTTON_B_PIN = 7;   
-const int LED_B_PIN = 5;      
+const int NUM_OBJ = 5;
+const int NUM_PILLARS = 5;
 
-int qteCount = 0;
-unsigned long qteStartTime = 0;
-const int targetPresses = 3;         
-const unsigned long qteWindow = 3000; 
+const int TOUCH_PIN = 2;
 
-bool isSafe = false;                  
-unsigned long safeStartTime = 0;
-const unsigned long safeDuration = 4000; 
+const int PILLAR_LED[5]   = {   4,   7,  10,  A0,  A3 };
+const int PILLAR_HOLD[5]  = {   5,   8,  11,  A1,  A4 };
+const int PILLAR_QTE[5]   = {   6,   9,  12,  A2,  A5 };
 
-bool lastButtonAState = HIGH;
-bool lastTouchState = HIGH; 
-bool lastButtonBState = HIGH; 
+const int HOLD_PILLAR[5]  = {   0, 4, 3, 2, 1 };
+const int QTE_PILLAR[5]   = {   2, 1, 0, 4, 3 };
+const char OBJ_NAME[5]    = { 'A', 'B', 'C', 'D', 'E' };
+
+const unsigned long QTE_WINDOW   = 3000; 
+const int           QTE_TARGET   = 3;  
+const unsigned long REBOOT_DELAY = 5000; 
+const unsigned long DEBOUNCE_MS  = 30;   
+
+enum State { ARMED, HACKED };
+
+struct Objective {
+  State state;
+  int qteCount;
+  unsigned long qteStart;
+  unsigned long hackedAt;
+  int ledPin;
+  int holdPin;
+  int qtePin;
+};
+
+struct Btn {
+  bool stable;          
+  bool raw;
+  unsigned long changedAt;
+};
+
+Objective obj[NUM_OBJ];
+Btn holdBtn[NUM_OBJ];
+Btn qteBtn[NUM_OBJ];
+
+bool alarmIsPlaying = false;
+bool lastTouchState = HIGH;
+
+bool updateBtn(bool &stable, bool &raw, unsigned long &changedAt, int pin, unsigned long now) {
+  bool r = digitalRead(pin);
+  if (r != raw) {
+    raw = r;
+    changedAt = now;
+  }
+  if (stable != raw && (now - changedAt) >= DEBOUNCE_MS) {
+    stable = raw;
+    return (stable == LOW);
+  }
+  return false;
+}
+
+void initBtn(bool &stable, bool &raw, unsigned long &changedAt, int pin) {
+  raw = digitalRead(pin);
+  stable = raw;
+  changedAt = 0;
+}
 
 void setup() {
   Serial.begin(9600);
+
   pinMode(TOUCH_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_A_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_B_PIN, INPUT_PULLUP);
-  
-  pinMode(LED_MAIN_PIN, OUTPUT);
-  pinMode(LED_B_PIN, OUTPUT);
+
+  for (int i = 0; i < NUM_OBJ; i++) {
+    obj[i].ledPin  = PILLAR_LED[HOLD_PILLAR[i]];
+    obj[i].holdPin = PILLAR_HOLD[HOLD_PILLAR[i]];
+    obj[i].qtePin  = PILLAR_QTE[QTE_PILLAR[i]];
+
+    pinMode(obj[i].ledPin, OUTPUT);
+    pinMode(obj[i].holdPin, INPUT_PULLUP);
+    pinMode(obj[i].qtePin, INPUT_PULLUP);
+
+    obj[i].state = ARMED;
+    obj[i].qteCount = 0;
+    obj[i].qteStart = 0;
+    obj[i].hackedAt = 0;
+    
+    initBtn(holdBtn[i].stable, holdBtn[i].raw, holdBtn[i].changedAt, obj[i].holdPin);
+    initBtn(qteBtn[i].stable, qteBtn[i].raw, qteBtn[i].changedAt, obj[i].qtePin);
+  }
 
   Serial.println("ARDUINO_READY");
 }
 
 void loop() {
-  unsigned long currentMillis = millis();
-
-  // 1. CEK TOUCH SENSOR
+  unsigned long now = millis();
+  
   int touchState = digitalRead(TOUCH_PIN);
   if (touchState == LOW && lastTouchState == HIGH) {
-    digitalWrite(LED_MAIN_PIN, HIGH);
-    Serial.println("TOUCH_PRESSED"); 
+    Serial.println("TOUCH_PRESSED");
   } else if (touchState == HIGH && lastTouchState == LOW) {
-    digitalWrite(LED_MAIN_PIN, LOW);
     Serial.println("TOUCH_RELEASED");
   }
   lastTouchState = touchState;
 
-  // 2. LOGIKA QTE (Button A)
-  bool currentButtonA = digitalRead(BUTTON_A_PIN);
-  if (currentButtonA == LOW && lastButtonAState == HIGH) { 
-    if (qteCount == 0) {
-      qteStartTime = currentMillis; 
-    }
-    qteCount++;
-  }
-  lastButtonAState = currentButtonA;
+  bool alarmNeeded = false;
 
-  if (qteCount >= targetPresses) {
-    isSafe = true;
-    safeStartTime = currentMillis;
-    qteCount = 0;
-    Serial.println("QTE_SUCCESS");
-  }
+  for (int i = 0; i < NUM_OBJ; i++) {
+    bool qtePressed = updateBtn(qteBtn[i].stable, qteBtn[i].raw, qteBtn[i].changedAt, obj[i].qtePin, now);
+    updateBtn(holdBtn[i].stable, holdBtn[i].raw, holdBtn[i].changedAt, obj[i].holdPin, now);
 
-  if (qteCount > 0 && (currentMillis - qteStartTime > qteWindow)) {
-    Serial.println("QTE_FAILED");
-    qteCount = 0; 
-  }
+    Objective &o = obj[i];
 
-  // 3. LOGIKA STATUS AMAN & TIMER RE-ARMED
-  if (isSafe) {
-    digitalWrite(LED_B_PIN, LOW); // LED B mati (Aman / Sistem Mati Sesaat)
-    if (currentMillis - safeStartTime > safeDuration) {
-      isSafe = false; // Sistem RE-ARMED (Hidup Lagi)
-      Serial.println("SYSTEM_RE-ARMED");
-      
-      // Tepat saat re-armed, cek fisik Button B: apakah pemain sedang melepasnya?
-      int checkB = digitalRead(BUTTON_B_PIN);
-      if (checkB == HIGH) { // HIGH artinya dilepas
-        Serial.println("PLAY_AUDIO_BUTTON_B_RELEASED");
+    if (o.state == ARMED) {
+      if (qtePressed) {
+        if (o.qteCount == 0 || (now - o.qteStart) > QTE_WINDOW) {
+          o.qteCount = 0;
+          o.qteStart = now;
+        }
+        o.qteCount++;
+
+        if (o.qteCount >= QTE_TARGET) {
+          o.state = HACKED;
+          o.hackedAt = now;
+          o.qteCount = 0;
+          Serial.print("QTE_");
+          Serial.print(OBJ_NAME[i]);
+          Serial.println("_SUCCESS");
+        }
+      }
+    } else {
+      if ((now - o.hackedAt) >= REBOOT_DELAY) {
+        o.state = ARMED;
+        o.qteCount = 0;
+        Serial.print("OBJ_");
+        Serial.print(OBJ_NAME[i]);
+        Serial.println("_REARMED");
       }
     }
-  } else {
-    digitalWrite(LED_B_PIN, HIGH); // LED B menyala (Sistem Aktif)
+
+    digitalWrite(o.ledPin, o.state == ARMED ? HIGH : LOW);
+
+    if (o.state == ARMED && holdBtn[i].stable == HIGH) {
+      alarmNeeded = true;
+    }
   }
 
-  // 4. CEK BUTTON B (Hold Button - Menggunakan logika aslimu yang sudah sempurna)
-  int buttonBState = digitalRead(BUTTON_B_PIN);
-  
-  // Jika tombol dilepas DAN sistem aktif (!isSafe)
-  if (buttonBState == HIGH && lastButtonBState == LOW && !isSafe) {
+  if (alarmNeeded && !alarmIsPlaying) {
     Serial.println("PLAY_AUDIO_BUTTON_B_RELEASED");
-  }
-  
-  // Jika tombol ditekan kembali (menghentikan alarm)
-  if (buttonBState == LOW && lastButtonBState == HIGH) {
+    alarmIsPlaying = true;
+  } else if (!alarmNeeded && alarmIsPlaying) {
     Serial.println("STOP_ALARM");
+    alarmIsPlaying = false;
   }
-  
-  lastButtonBState = buttonBState;
-  
-  delay(10); 
+
+  delay(5);
 }
